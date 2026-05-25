@@ -1,114 +1,150 @@
-import type { UserRole } from '@/types';
-
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+import type { UserRole } from "@/types";
 
 // Token helpers
 export function getToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem('vkumb_token');
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("vkumb_token");
 }
 
 export function setToken(token: string): void {
-  if (typeof window === 'undefined') return;
-  localStorage.setItem('vkumb_token', token);
+  if (typeof window === "undefined") return;
+  localStorage.setItem("vkumb_token", token);
 }
 
 export function removeToken(): void {
-  if (typeof window === 'undefined') return;
-  localStorage.removeItem('vkumb_token');
+  if (typeof window === "undefined") return;
+  localStorage.removeItem("vkumb_token");
 }
 
-// Fetch helper
-async function request<T>(method: string, endpoint: string, body?: any): Promise<T> {
+// Auth API - using direct fetch for auth since tRPC auth is special
+const API_BASE = "/api/trpc";
+
+async function trpcFetch<T>(path: string, input?: unknown): Promise<T> {
   const token = getToken();
-  const url = endpoint.startsWith('http') ? endpoint : `${API_BASE_URL}${endpoint}`;
+  const url = input
+    ? `${API_BASE}/${path}?input=${encodeURIComponent(JSON.stringify({ json: input }))}`
+    : `${API_BASE}/${path}`;
+
   const res = await fetch(url, {
-    method,
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
+    throw new Error(err.error?.message || `HTTP ${res.status}`);
+  }
+
+  const data = await res.json();
+  return data.result?.data?.json as T;
+}
+
+async function trpcMutate<T>(path: string, input?: unknown): Promise<T> {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}/${path}`, {
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    ...(body ? { body: JSON.stringify(body) } : {}),
+    body: JSON.stringify({
+      json: input,
+    }),
   });
-  const data = await res.json();
+
   if (!res.ok) {
-    throw new Error(data.error || data.message || `HTTP ${res.status}`);
+    const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
+    throw new Error(err.error?.message || `HTTP ${res.status}`);
   }
-  return data as T;
+
+  const data = await res.json();
+  return data.result?.data?.json as T;
 }
 
 // Auth API
 export const authApi = {
-  requestOTP: (phone: string, role?: UserRole) => request<{ requestId: string; expiresIn: number }>('POST', '/auth/otp/request', { phone, role }),
-  verifyOTP: (phone: string, otp: string, role?: UserRole) => request<{ user: any; token: string }>('POST', '/auth/otp/verify', { phone, otp, role }),
-  demoLogin: (role: UserRole) => request<{ user: any; token: string }>('POST', '/auth/otp/verify', { phone: '9876543210', otp: '123456', role }),
-  me: () => request<any>('GET', '/auth/me'),
-  logout: () => request<void>('POST', '/auth/logout', {}),
+  requestOTP: (phone: string, role?: UserRole) =>
+    trpcMutate<{ requestId: string; expiresIn: number }>("auth.requestOTP", { phone, role }),
+
+  verifyOTP: (phone: string, otp: string, role?: UserRole) =>
+    trpcMutate<{ user: any; token: string }>("auth.verifyOTP", { phone, otp, role }),
+
+  demoLogin: (role: UserRole) =>
+    trpcMutate<{ user: any; token: string }>("auth.demoLogin", { role }),
+
+  me: () => trpcFetch<any>("auth.me"),
+
+  logout: () => trpcMutate<void>("auth.logout"),
 };
 
 // Session API
 export const sessionApi = {
-  getEvents: () => request<any[]>('GET', '/events'),
-  getDaywiseSchedule: (eventId: string) => request<any[]>(`GET`, `/events/${eventId}/schedule`),
-  getSessions: () => request<any[]>('GET', '/sessions'),
-  getSession: (sessionId: string) => request<any>(`GET`, `/sessions/${sessionId}`),
-  getSessionAttendance: (sessionId: string) => request<any[]>(`GET`, `/sessions/${sessionId}/attendance`),
+  getEvents: () => trpcFetch<any[]>("events.list"),
+  getDaywiseSchedule: (eventId: string) => trpcFetch<any[]>("events.getSchedule", { eventId }),
+  getSessions: () => trpcFetch<any[]>("events.getSessions", { eventId: "default" }),
+  getSession: (sessionId: string) => trpcFetch<any>("events.getSession", { sessionId }),
+  getSessionAttendance: (sessionId: string) => trpcFetch<any[]>("attendance.getSessionAttendance", { sessionId }),
 };
 
 // Attendance API
 export const attendanceApi = {
   checkIn: (payload: { sessionId: string; eventId: string; qrData?: string; method?: string }) =>
-    request<any>('POST', '/attendance/check-in', payload),
+    trpcMutate<any>("attendance.checkIn", payload),
   manualCheckIn: (payload: { sessionId: string; eventId: string; userId: string; userName?: string; reason?: string }) =>
-    request<any>('POST', '/attendance/manual-checkin', payload),
-  getMyAttendance: () => request<any[]>('GET', '/attendance/my'),
-  getStats: (sessionId: string) => request<any>(`GET`, `/attendance/stats/${sessionId}`),
+    trpcMutate<any>("attendance.manualCheckIn", payload),
+  getMyAttendance: () => trpcFetch<any[]>("attendance.getMyAttendance"),
+  getStats: (sessionId: string) => trpcFetch<any>("attendance.getStats", { sessionId }),
 };
 
 // QR API
 export const qrApi = {
-  generate: (sessionId: string, instructorId?: string) =>
-    request<any>('POST', `/qr/generate/${sessionId}`, { instructorId }),
+  generate: (sessionId: string) =>
+    trpcMutate<any>("qr.generate", { sessionId }),
   validate: (qrData: string) =>
-    request<any>('POST', '/qr/validate', { qrData }),
+    trpcMutate<any>("qr.validate", { qrData }),
 };
 
 // Exam API
 export const examApi = {
-  getExams: () => request<any[]>('GET', '/exams'),
-  getExam: (examId: string) => request<any>('GET', `/exams/${examId}`),
-  startExam: (examId: string) => request<any>('POST', `/exams/${examId}/start`, {}),
-  submitExam: (examId: string, answers: Record<string, string>) => request<any>('POST', `/exams/${examId}/submit`, { answers }),
-  getMyAttempts: () => request<any[]>('GET', '/exams/attempts/my'),
-  getAllAttempts: () => request<any[]>('GET', '/exams/attempts/all'),
+  getExams: () => trpcFetch<any[]>("exams.list"),
+  getExam: (examId: string) => trpcFetch<any>("exams.getById", { examId }),
+  startExam: (examId: string) => trpcMutate<any>("exams.startExam", { examId }),
+  submitExam: (examId: string, answers: Record<string, string>) =>
+    trpcMutate<any>("exams.submitExam", { examId, answers }),
+  getMyAttempts: () => trpcFetch<any[]>("exams.getMyAttempts"),
+  getAllAttempts: () => trpcFetch<any[]>("exams.getAllAttempts"),
 };
 
 // Certificate API
 export const certificateApi = {
-  getMyCertificates: () => request<any[]>('GET', '/certificates/my'),
-  downloadCertificate: (id: string) => request<any>('GET', `/certificates/${id}/download`),
+  getMyCertificates: () => trpcFetch<any[]>("certificates.getMyCertificates"),
+  downloadCertificate: (id: string) => trpcFetch<any>("certificates.download", { certificateId: id }),
 };
 
 // Admin API
 export const adminApi = {
-  getConfig: () => request<any[]>('GET', '/admin/config'),
-  updateConfig: (key: string, value: string | number | boolean) => request<any>('PATCH', '/admin/configurations', { key, value }),
-  bulkUpdateConfig: (updates: Array<{ key: string; value: string }>) => request<any>('PATCH', '/admin/configurations/bulk', { updates }),
-  resetConfig: (key: string) => request<any>('POST', `/admin/config/reset/${key}`, {}),
-  getConfigCategories: () => request<any[]>('GET', '/admin/config/categories'),
-  getAPIStatus: () => request<any[]>('GET', '/admin/api-status'),
-  getStats: () => request<any>('GET', '/admin/stats'),
-  getReports: () => request<any[]>('GET', '/admin/reports'),
-  generateReport: (reportId: string) => request<any>('POST', `/admin/reports/${reportId}/generate`, {}),
-  getUsers: () => request<any>('GET', '/admin/users'),
-  updateUserRole: (userId: string, role: string) => request<any>('PATCH', `/admin/users/${userId}/role`, { role }),
-  updateUserStatus: (userId: string, status: string) => request<any>('PATCH', `/admin/users/${userId}/status`, { status }),
-  getTentConfig: () => request<Record<string, string>>('GET', '/admin/tent-config'),
+  getConfig: () => trpcFetch<any[]>("admin.getConfig"),
+  updateConfig: (key: string, value: string | number | boolean) =>
+    trpcMutate<any>("admin.updateConfig", { key, value: String(value) }),
+  bulkUpdateConfig: (updates: Array<{ key: string; value: string }>) =>
+    trpcMutate<any>("admin.bulkUpdateConfig", updates),
+  resetConfig: (key: string) =>
+    trpcMutate<any>("admin.resetConfigToDefault", { key }),
+  getConfigCategories: () => trpcFetch<any[]>("admin.getConfigCategories"),
+  getAPIStatus: () => trpcFetch<any[]>("admin.getAPIStatus"),
+  getStats: () => trpcFetch<any>("admin.getStats"),
+  getReports: () => trpcFetch<any[]>("admin.getReports"),
+  generateReport: (reportId: string) =>
+    trpcMutate<any>("admin.generateReport", { type: reportId }),
+  getUsers: () => trpcFetch<any>("admin.getUsers"),
+  updateUserRole: (userId: string, role: string) =>
+    trpcMutate<any>("admin.updateUserRole", { userId, role }),
+  updateUserStatus: (userId: string, status: string) =>
+    trpcMutate<any>("admin.updateUserStatus", { userId, status }),
 };
 
 // Sync API
 export const syncApi = {
-  syncItems: (items: any[]) => request<any>('POST', '/sync/batch', { items }),
+  syncItems: (items: any[]) => trpcMutate<any>("sync.batchSync", { items }),
 };
 
 export default { auth: authApi, sessions: sessionApi, exam: examApi, certificate: certificateApi, admin: adminApi, sync: syncApi, attendance: attendanceApi, qr: qrApi };

@@ -46,7 +46,7 @@ export default function QRGeneratePage() {
     setIsGenerating(true)
     setError("")
     try {
-      const result = await qrApi.generate(selectedSessionId, 'inst-001')
+      const result = await qrApi.generate(selectedSessionId)
       setQrResult(result)
       setTimeLeft(result.expiresIn || 900)
     } catch (e: any) {
