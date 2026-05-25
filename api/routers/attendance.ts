@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { eq, and, sql } from "drizzle-orm";
-import { createRouter, publicQuery, authedQuery } from "../middleware";
+import { createRouter, publicQuery, authedQuery, instructorQuery } from "../middleware";
 import { getDb } from "../queries/connection";
-import { attendanceRecords, sessions } from "@db/schema";
+import { attendanceRecords, sessions, users } from "@db/schema";
 
 export const attendanceRouter = createRouter({
   checkIn: authedQuery
@@ -64,35 +64,123 @@ export const attendanceRouter = createRouter({
       return { ...result[0], message: "Attendance marked successfully" };
     }),
 
-  manualCheckIn: authedQuery
+  manualCheckIn: instructorQuery
     .input(z.object({
       sessionId: z.string(),
       eventId: z.string(),
       userId: z.string(),
       userName: z.string().optional(),
+      status: z.enum(["present", "absent", "late", "excused"]).default("present"),
       reason: z.string().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
+      const now = new Date();
 
-      const result = await db.insert(attendanceRecords).values({
-        userId: input.userId,
-        userName: input.userName,
-        sessionId: input.sessionId,
-        eventId: input.eventId,
-        status: "present",
-        checkInAt: new Date(),
-        checkInMethod: "manual_override",
-        overrideBy: ctx.user!.id,
-        overrideReason: input.reason || "Manual check-in by instructor",
-      }).returning();
+      // Check if an attendance record already exists for this user + session
+      const existing = await db.select().from(attendanceRecords).where(
+        and(
+          eq(attendanceRecords.userId, input.userId),
+          eq(attendanceRecords.sessionId, input.sessionId)
+        )
+      ).limit(1);
 
-      // Update session attended count
-      await db.update(sessions)
-        .set({ attended: sql`${sessions.attended} + 1` })
-        .where(eq(sessions.id, input.sessionId));
+      let record;
+      const wasPresent = existing.length > 0 && existing[0].status === "present";
+      const isNowPresent = input.status === "present";
 
-      return { ...result[0], message: "Manual attendance marked successfully" };
+      if (existing.length > 0) {
+        // Update existing record
+        const updateData: any = {
+          status: input.status,
+          checkInMethod: "manual_override",
+          overrideBy: ctx.user!.id,
+          overrideReason: input.reason || `Manually marked ${input.status} by instructor`,
+        };
+
+        if (isNowPresent && !existing[0].checkInAt) {
+          updateData.checkInAt = now;
+        }
+
+        const result = await db.update(attendanceRecords)
+          .set(updateData)
+          .where(eq(attendanceRecords.id, existing[0].id))
+          .returning();
+
+        record = result[0];
+      } else {
+        // Create new record
+        const result = await db.insert(attendanceRecords).values({
+          userId: input.userId,
+          userName: input.userName,
+          sessionId: input.sessionId,
+          eventId: input.eventId,
+          status: input.status,
+          checkInAt: isNowPresent ? now : null,
+          checkInMethod: "manual_override",
+          overrideBy: ctx.user!.id,
+          overrideReason: input.reason || `Manually marked ${input.status} by instructor`,
+        }).returning();
+
+        record = result[0];
+      }
+
+      // Update session attended count based on status change
+      if (wasPresent && !isNowPresent) {
+        // Went from present to non-present: decrement
+        await db.update(sessions)
+          .set({ attended: sql`greatest(0, ${sessions.attended} - 1)` })
+          .where(eq(sessions.id, input.sessionId));
+      } else if (!wasPresent && isNowPresent) {
+        // Went from non-present to present: increment
+        await db.update(sessions)
+          .set({ attended: sql`${sessions.attended} + 1` })
+          .where(eq(sessions.id, input.sessionId));
+      }
+
+      return {
+        success: true,
+        record,
+        message: `Attendance marked as ${input.status}`,
+      };
+    }),
+
+  // Get full roster for a session (all volunteers + their attendance status)
+  getRoster: instructorQuery
+    .input(z.object({ sessionId: z.string(), eventId: z.string().optional() }))
+    .query(async ({ input }) => {
+      const db = getDb();
+
+      // Get all volunteers
+      const allVolunteers = await db.select().from(users)
+        .where(eq(users.role, "volunteer"));
+
+      // Get existing attendance records for this session
+      const records = await db.select().from(attendanceRecords)
+        .where(eq(attendanceRecords.sessionId, input.sessionId));
+
+      // Create a map of userId -> attendance record
+      const recordMap = new Map();
+      for (const r of records) {
+        recordMap.set(r.userId, r);
+      }
+
+      // Merge: for each volunteer, include their attendance status
+      const roster = allVolunteers.map((v) => {
+        const record = recordMap.get(v.id);
+        return {
+          userId: v.id,
+          userName: v.fullName || `${v.firstName || ''} ${v.lastName || ''}`.trim() || v.vid || 'Unknown',
+          vid: v.vid,
+          unit: v.unit,
+          status: record ? record.status : "absent", // Default to absent if no record
+          checkInAt: record ? record.checkInAt : null,
+          checkInMethod: record ? record.checkInMethod : null,
+          recordId: record ? record.id : null,
+        };
+      });
+
+      return roster;
     }),
 
   getStats: publicQuery

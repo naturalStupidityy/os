@@ -14,7 +14,7 @@ export default function RosterPage() {
   const { user } = useAuthStore()
   const [sessions, setSessions] = useState<any[]>([])
   const [selectedSessionId, setSelectedSessionId] = useState("")
-  const [attendance, setAttendance] = useState<any[]>([])
+  const [roster, setRoster] = useState<any[]>([])
   const [stats, setStats] = useState<any>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [isLoadingSessions, setIsLoadingSessions] = useState(true)
@@ -33,7 +33,7 @@ export default function RosterPage() {
 
   useEffect(() => {
     if (selectedSessionId) {
-      loadAttendance(selectedSessionId)
+      loadRoster(selectedSessionId)
     }
   }, [selectedSessionId])
 
@@ -44,24 +44,24 @@ export default function RosterPage() {
       setSessions(data)
       if (data.length > 0) setSelectedSessionId(data[0].id)
     } catch (e: any) {
-      setError("Failed to load sessions")
+      setError("Failed to load sessions: " + (e.message || "Unknown error"))
     } finally {
       setIsLoadingSessions(false)
     }
   }
 
-  const loadAttendance = async (sessionId: string) => {
+  const loadRoster = async (sessionId: string) => {
     setIsLoading(true)
     setError("")
     try {
-      const [attData, statsData] = await Promise.all([
-        sessionApi.getSessionAttendance(sessionId),
+      const [rosterData, statsData] = await Promise.all([
+        attendanceApi.getRoster(sessionId),
         attendanceApi.getStats(sessionId),
       ])
-      setAttendance(attData)
+      setRoster(rosterData)
       setStats(statsData)
     } catch (e: any) {
-      setError("Failed to load attendance data")
+      setError("Failed to load roster data: " + (e.message || "Unknown error"))
     } finally {
       setIsLoading(false)
     }
@@ -76,20 +76,24 @@ export default function RosterPage() {
 
   const handleManualMark = async () => {
     if (!markTarget || !selectedSessionId) return
-    setIsMarking(markTarget.id)
+    setIsMarking(markTarget.userId)
     setShowMarkDialog(false)
     try {
+      const selectedSession = sessions.find(s => s.id === selectedSessionId)
       const result = await attendanceApi.manualCheckIn({
         sessionId: selectedSessionId,
-        eventId: selectedSession?.eventId,
+        eventId: selectedSession?.eventId || "",
         userId: markTarget.userId,
         userName: markTarget.userName,
+        status: markAction,
         reason: manualReason || `Manually marked ${markAction} by ${user?.name || 'instructor'}`,
       })
 
       if (result.success) {
-        // Refresh attendance data
-        await loadAttendance(selectedSessionId)
+        // Refresh roster data
+        await loadRoster(selectedSessionId)
+      } else {
+        setError("Failed to mark attendance: " + (result.message || "Unknown error"))
       }
     } catch (e: any) {
       setError(e.message || `Failed to mark ${markAction}`)
@@ -98,9 +102,9 @@ export default function RosterPage() {
     }
   }
 
-  const filteredAttendance = attendance.filter((a) => {
-    const matchesSearch = !searchQuery || a.userName?.toLowerCase().includes(searchQuery.toLowerCase()) || a.userId?.toLowerCase().includes(searchQuery.toLowerCase())
-    const matchesStatus = statusFilter === 'all' || a.status === statusFilter
+  const filteredRoster = roster.filter((r) => {
+    const matchesSearch = !searchQuery || r.userName?.toLowerCase().includes(searchQuery.toLowerCase()) || r.vid?.toLowerCase().includes(searchQuery.toLowerCase())
+    const matchesStatus = statusFilter === 'all' || r.status === statusFilter
     return matchesSearch && matchesStatus
   })
 
@@ -111,7 +115,7 @@ export default function RosterPage() {
       case 'present': return <Badge variant="success" className="capitalize">{status}</Badge>
       case 'absent': return <Badge variant="destructive" className="capitalize">{status}</Badge>
       case 'late': return <Badge className="bg-yellow-500 capitalize">{status}</Badge>
-      case 'exempt': return <Badge className="bg-blue-500 capitalize"><Shield className="h-3 w-3 mr-1" />{status}</Badge>
+      case 'excused': return <Badge className="bg-blue-500 capitalize"><Shield className="h-3 w-3 mr-1" />{status}</Badge>
       default: return <Badge variant="outline" className="capitalize">{status}</Badge>
     }
   }
@@ -194,7 +198,7 @@ export default function RosterPage() {
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Search by name or ID..."
+              placeholder="Search by name or VID..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-10"
@@ -210,19 +214,19 @@ export default function RosterPage() {
               <SelectItem value="present">Present</SelectItem>
               <SelectItem value="absent">Absent</SelectItem>
               <SelectItem value="late">Late</SelectItem>
-              <SelectItem value="exempt">Exempt</SelectItem>
+              <SelectItem value="excused">Excused</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="outline" onClick={() => selectedSessionId && loadAttendance(selectedSessionId)}>
+          <Button variant="outline" onClick={() => selectedSessionId && loadRoster(selectedSessionId)}>
             <RefreshCw className="h-4 w-4" />
           </Button>
         </div>
 
-        {/* Attendance List */}
+        {/* Roster List */}
         {isLoading ? (
           <div className="flex flex-col items-center justify-center py-12">
             <Loader2 className="h-8 w-8 animate-spin text-orange-500 mb-4" />
-            <p className="text-muted-foreground">Loading attendance...</p>
+            <p className="text-muted-foreground">Loading roster...</p>
           </div>
         ) : (
           <Card>
@@ -230,7 +234,7 @@ export default function RosterPage() {
               <CardTitle className="flex items-center gap-2">
                 <ClipboardList className="h-5 w-5 text-orange-500" />
                 Attendance Roster
-                <span className="text-sm font-normal text-muted-foreground">({filteredAttendance.length} records)</span>
+                <span className="text-sm font-normal text-muted-foreground">({filteredRoster.length} volunteers)</span>
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -240,46 +244,46 @@ export default function RosterPage() {
                     <tr className="border-b">
                       <th className="text-left py-2 px-3 font-medium">Status</th>
                       <th className="text-left py-2 px-3 font-medium">Volunteer</th>
-                      <th className="text-left py-2 px-3 font-medium hidden md:table-cell">User ID</th>
+                      <th className="text-left py-2 px-3 font-medium hidden md:table-cell">VID</th>
                       <th className="text-left py-2 px-3 font-medium hidden sm:table-cell">Method</th>
                       <th className="text-left py-2 px-3 font-medium hidden lg:table-cell">Check-in Time</th>
                       <th className="text-right py-2 px-3 font-medium">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredAttendance.map((a) => (
-                      <tr key={a.id} className="border-b last:border-0 hover:bg-muted/50">
-                        <td className="py-2 px-3">{getStatusBadge(a.status)}</td>
-                        <td className="py-2 px-3 font-medium">{a.userName}</td>
-                        <td className="py-2 px-3 font-mono text-xs hidden md:table-cell">{a.userId}</td>
+                    {filteredRoster.map((r) => (
+                      <tr key={r.userId} className="border-b last:border-0 hover:bg-muted/50">
+                        <td className="py-2 px-3">{getStatusBadge(r.status)}</td>
+                        <td className="py-2 px-3 font-medium">{r.userName}</td>
+                        <td className="py-2 px-3 font-mono text-xs hidden md:table-cell">{r.vid}</td>
                         <td className="py-2 px-3 hidden sm:table-cell">
-                          <Badge variant="outline" className="capitalize">{a.checkInMethod || 'N/A'}</Badge>
+                          <Badge variant="outline" className="capitalize">{r.checkInMethod || 'N/A'}</Badge>
                         </td>
                         <td className="py-2 px-3 text-muted-foreground hidden lg:table-cell">
-                          {a.checkInAt ? new Date(a.checkInAt).toLocaleTimeString() : '-'}
+                          {r.checkInAt ? new Date(r.checkInAt).toLocaleTimeString() : '-'}
                         </td>
                         <td className="py-2 px-3 text-right">
                           <div className="flex items-center justify-end gap-1">
-                            {(a.status === 'absent' || a.status === 'late') ? (
+                            {r.status === 'absent' || r.status === 'late' ? (
                               <Button
                                 size="sm"
                                 variant="outline"
                                 className="h-7 text-xs bg-green-50 hover:bg-green-100 text-green-700 border-green-200"
-                                onClick={() => openMarkDialog(a, "present")}
-                                disabled={isMarking === a.id}
+                                onClick={() => openMarkDialog(r, "present")}
+                                disabled={isMarking === r.userId}
                               >
-                                {isMarking === a.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <UserCheck className="h-3 w-3 mr-1" />}
+                                {isMarking === r.userId ? <Loader2 className="h-3 w-3 animate-spin" /> : <UserCheck className="h-3 w-3 mr-1" />}
                                 Mark Present
                               </Button>
-                            ) : a.status === 'present' ? (
+                            ) : r.status === 'present' ? (
                               <Button
                                 size="sm"
                                 variant="outline"
                                 className="h-7 text-xs bg-red-50 hover:bg-red-100 text-red-700 border-red-200"
-                                onClick={() => openMarkDialog(a, "absent")}
-                                disabled={isMarking === a.id}
+                                onClick={() => openMarkDialog(r, "absent")}
+                                disabled={isMarking === r.userId}
                               >
-                                {isMarking === a.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <UserX className="h-3 w-3 mr-1" />}
+                                {isMarking === r.userId ? <Loader2 className="h-3 w-3 animate-spin" /> : <UserX className="h-3 w-3 mr-1" />}
                                 Mark Absent
                               </Button>
                             ) : (
@@ -288,19 +292,19 @@ export default function RosterPage() {
                                   size="sm"
                                   variant="outline"
                                   className="h-7 text-xs bg-green-50 hover:bg-green-100 text-green-700 border-green-200"
-                                  onClick={() => openMarkDialog(a, "present")}
-                                  disabled={isMarking === a.id}
+                                  onClick={() => openMarkDialog(r, "present")}
+                                  disabled={isMarking === r.userId}
                                 >
-                                  {isMarking === a.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
+                                  {isMarking === r.userId ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
                                 </Button>
                                 <Button
                                   size="sm"
                                   variant="outline"
                                   className="h-7 text-xs bg-red-50 hover:bg-red-100 text-red-700 border-red-200"
-                                  onClick={() => openMarkDialog(a, "absent")}
-                                  disabled={isMarking === a.id}
+                                  onClick={() => openMarkDialog(r, "absent")}
+                                  disabled={isMarking === r.userId}
                                 >
-                                  {isMarking === a.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <XCircle className="h-3 w-3" />}
+                                  {isMarking === r.userId ? <Loader2 className="h-3 w-3 animate-spin" /> : <XCircle className="h-3 w-3" />}
                                 </Button>
                               </div>
                             )}
@@ -308,10 +312,10 @@ export default function RosterPage() {
                         </td>
                       </tr>
                     ))}
-                    {filteredAttendance.length === 0 && (
+                    {filteredRoster.length === 0 && (
                       <tr>
                         <td colSpan={6} className="text-center py-8 text-muted-foreground">
-                          No attendance records found.
+                          No volunteers found for this session.
                         </td>
                       </tr>
                     )}
@@ -331,7 +335,7 @@ export default function RosterPage() {
               {markAction === "present" ? "Mark as Present" : "Mark as Absent"}
             </DialogTitle>
             <DialogDescription>
-              {markTarget && `Override attendance for ${markTarget.userName} (${markTarget.userId})`}
+              {markTarget && `Override attendance for ${markTarget.userName} (${markTarget.vid || markTarget.userId})`}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">

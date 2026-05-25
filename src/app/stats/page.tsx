@@ -191,7 +191,7 @@ export default function StatsPage() {
                       <td className="py-2 px-3">{s.date}</td>
                       <td className="py-2 px-3 text-right">{s.enrolled}</td>
                       <td className="py-2 px-3 text-right">{s.attended}</td>
-                      <td className="py-2 px-3 text-right">{Math.round((s.attended / s.enrolled) * 100)}%</td>
+                      <td className="py-2 px-3 text-right">{s.enrolled > 0 ? Math.round((s.attended / s.enrolled) * 100) : 0}%</td>
                       <td className="py-2 px-3">
                         <Badge variant={s.status === 'completed' ? 'success' : s.status === 'in_progress' ? 'default' : 'secondary'} className="capitalize">
                           {s.status.replace('_', ' ')}

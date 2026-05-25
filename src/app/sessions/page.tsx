@@ -161,12 +161,12 @@ export default function SessionsPage() {
                         <div className="mt-3">
                           <div className="flex justify-between text-xs text-muted-foreground mb-1">
                             <span>Attendance</span>
-                            <span>{Math.round((session.attended / session.enrolled) * 100)}%</span>
+                            <span>{session.enrolled > 0 ? Math.round((session.attended / session.enrolled) * 100) : 0}%</span>
                           </div>
                           <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
                             <div
                               className="h-full bg-green-500 rounded-full transition-all"
-                              style={{ width: `${Math.round((session.attended / session.enrolled) * 100)}%` }}
+                              style={{ width: `${session.enrolled > 0 ? Math.round((session.attended / session.enrolled) * 100) : 0}%` }}
                             />
                           </div>
                         </div>

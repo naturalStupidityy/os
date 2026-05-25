@@ -89,10 +89,11 @@ export const sessionApi = {
 export const attendanceApi = {
   checkIn: (payload: { sessionId: string; eventId: string; qrData?: string; method?: string }) =>
     trpcMutate<any>("attendance.checkIn", payload),
-  manualCheckIn: (payload: { sessionId: string; eventId: string; userId: string; userName?: string; reason?: string }) =>
+  manualCheckIn: (payload: { sessionId: string; eventId: string; userId: string; userName?: string; status?: "present" | "absent" | "late" | "excused"; reason?: string }) =>
     trpcMutate<any>("attendance.manualCheckIn", payload),
   getMyAttendance: () => trpcFetch<any[]>("attendance.getMyAttendance"),
   getStats: (sessionId: string) => trpcFetch<any>("attendance.getStats", { sessionId }),
+  getRoster: (sessionId: string) => trpcFetch<any[]>("attendance.getRoster", { sessionId }),
 };
 
 // QR API

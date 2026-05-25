@@ -19,26 +19,28 @@ export const eventsRouter = createRouter({
     }),
 
   getSessions: publicQuery
-    .input(z.object({ eventId: z.string().optional() }))
+    .input(z.object({ eventId: z.string().optional() }).optional())
     .query(async ({ input }) => {
       const db = getDb();
-      if (input.eventId) {
-        return db.select().from(sessions).where(eq(sessions.eventId, input.eventId));
+      const eventId = input?.eventId;
+      if (eventId) {
+        return db.select().from(sessions).where(eq(sessions.eventId, eventId));
       }
       // Return all sessions if no eventId provided
       return db.select().from(sessions);
     }),
 
   getSchedule: publicQuery
-    .input(z.object({ eventId: z.string().optional() }))
+    .input(z.object({ eventId: z.string().optional() }).optional())
     .query(async ({ input }) => {
       const db = getDb();
+      const eventId = input?.eventId;
       let eventSessions;
-      if (input.eventId) {
+      if (eventId) {
         // Try to find sessions by the provided eventId
-        eventSessions = await db.select().from(sessions).where(eq(sessions.eventId, input.eventId));
+        eventSessions = await db.select().from(sessions).where(eq(sessions.eventId, eventId));
         // If no sessions found and eventId doesn't look like a UUID, try getting all sessions
-        if (eventSessions.length === 0 && !input.eventId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+        if (eventSessions.length === 0 && !eventId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
           eventSessions = await db.select().from(sessions);
         }
       } else {
