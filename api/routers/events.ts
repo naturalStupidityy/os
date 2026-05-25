@@ -19,10 +19,14 @@ export const eventsRouter = createRouter({
     }),
 
   getSessions: publicQuery
-    .input(z.object({ eventId: z.string() }))
+    .input(z.object({ eventId: z.string().optional() }))
     .query(async ({ input }) => {
       const db = getDb();
-      return db.select().from(sessions).where(eq(sessions.eventId, input.eventId));
+      if (input.eventId) {
+        return db.select().from(sessions).where(eq(sessions.eventId, input.eventId));
+      }
+      // Return all sessions if no eventId provided
+      return db.select().from(sessions);
     }),
 
   getSchedule: publicQuery
