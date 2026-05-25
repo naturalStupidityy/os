@@ -1,7 +1,8 @@
 import { z } from "zod";
+import { eq } from "drizzle-orm";
 import { createRouter, publicQuery, authedQuery } from "../middleware";
 import { getDb } from "../queries/connection";
-import { qrCodes } from "@db/schema";
+import { qrCodes, systemConfig } from "@db/schema";
 
 export const qrRouter = createRouter({
   generate: authedQuery
@@ -12,12 +13,16 @@ export const qrRouter = createRouter({
       const nonce = Math.random().toString(36).slice(2, 10);
 
       // Get QR validity from config (default 15 min)
+      const configResult = await db.select().from(systemConfig).where(eq(systemConfig.key, "qr.validity_minutes")).limit(1);
+      const validityMinutes = configResult[0] ? parseInt(configResult[0].value, 10) || 15 : 15;
+      const expiresInMs = validityMinutes * 60 * 1000;
+
       const qrPayload = {
         sessionId: input.sessionId,
         instructorId: ctx.user!.id,
         timestamp,
         nonce,
-        expiresAt: timestamp + 15 * 60 * 1000,
+        expiresAt: timestamp + expiresInMs,
       };
 
       const qrData = Buffer.from(JSON.stringify(qrPayload)).toString("base64");
@@ -26,12 +31,12 @@ export const qrRouter = createRouter({
         sessionId: input.sessionId,
         instructorId: ctx.user!.id,
         qrData,
-        expiresAt: new Date(timestamp + 15 * 60 * 1000),
+        expiresAt: new Date(timestamp + expiresInMs),
       });
 
       return {
         qrData,
-        expiresIn: 900,
+        expiresIn: validityMinutes * 60,
         sessionId: input.sessionId,
       };
     }),

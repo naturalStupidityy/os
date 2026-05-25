@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { ScanLine, Camera, Keyboard, CheckCircle2, Loader2, AlertCircle, Zap, X } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -20,12 +20,21 @@ export default function ScannerPage() {
   const [error, setError] = useState("")
   const [scanSuccess, setScanSuccess] = useState(false)
   const [paused, setPaused] = useState(false)
+  const [cameraError, setCameraError] = useState("")
+  const videoElementRef = useRef<HTMLVideoElement | null>(null)
 
   const isAdmin = user?.role === 'admin'
 
-  // react-zxing QR decoder hook
-  const { ref: videoRef } = useZxing({
+  // react-zxing QR decoder hook with mobile camera constraints
+  const { ref: zxingVideoRef } = useZxing({
     paused: paused || scanMode !== "camera",
+    constraints: {
+      video: {
+        facingMode: "environment",
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+    },
     onDecodeResult(decodedResult) {
       const decodedText = decodedResult.getText()
       if (decodedText && !scanSuccess && !isValidating) {
@@ -46,6 +55,56 @@ export default function ScannerPage() {
       }
     },
   })
+
+  // Combined ref to support both zxing and direct video access
+  const videoRef = useCallback((node: HTMLVideoElement | null) => {
+    videoElementRef.current = node
+    // Forward to zxing ref
+    if (typeof zxingVideoRef === 'function') {
+      zxingVideoRef(node)
+    } else if (zxingVideoRef && 'current' in zxingVideoRef) {
+      (zxingVideoRef as React.MutableRefObject<HTMLVideoElement | null>).current = node
+    }
+  }, [zxingVideoRef])
+
+  // Detect camera permission issues
+  useEffect(() => {
+    if (scanMode !== "camera") return
+
+    setCameraError("")
+    const timeout = setTimeout(() => {
+      const video = videoElementRef.current
+      if (video) {
+        const stream = video.srcObject as MediaStream | null
+        if (!stream || stream.getVideoTracks().length === 0 || !stream.getVideoTracks()[0]?.enabled) {
+          // Check if getUserMedia is supported
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            setCameraError("Camera access is not supported in this browser.")
+            return
+          }
+          // Try to get camera to provide better error message
+          navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+            .then(stream => {
+              // If we got here, camera works but zxing might not have attached
+              stream.getTracks().forEach(t => t.stop())
+            })
+            .catch((err: DOMException) => {
+              if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+                setCameraError("Camera permission denied. Please allow camera access in your browser settings and reload the page.")
+              } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+                setCameraError("No camera found on this device.")
+              } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+                setCameraError("Camera is already in use by another application.")
+              } else {
+                setCameraError(`Camera error: ${err.message || 'Unable to access camera'}`)
+              }
+            })
+        }
+      }
+    }, 3000)
+
+    return () => clearTimeout(timeout)
+  }, [scanMode])
 
   const validateQrData = useCallback(async (data: string) => {
     if (!data.trim()) return
@@ -158,6 +217,17 @@ export default function ScannerPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {cameraError && (
+                <Card className="border-red-500 bg-red-50 mb-4">
+                  <CardContent className="p-4 flex items-center gap-2 text-red-700">
+                    <AlertCircle className="h-5 w-5 flex-shrink-0" />
+                    <div>
+                      <p className="font-medium">Camera Error</p>
+                      <p className="text-sm">{cameraError}</p>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
               <div className="relative aspect-[4/3] bg-black rounded-lg overflow-hidden flex items-center justify-center">
                 <video
                   ref={videoRef}

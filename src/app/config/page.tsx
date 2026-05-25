@@ -60,9 +60,58 @@ export default function ConfigPage() {
 
   useEffect(() => { fetchConfigs() }, [fetchConfigs])
 
+  const getRelatedUpdates = (prev: ConfigItem[], changedKey: string, newValue: string): Record<string, string> => {
+    const attendanceKeys = ["attendance.threshold_percentage", "attendance.min_sessions_required", "attendance.total_sessions"];
+    if (!attendanceKeys.includes(changedKey)) return { [changedKey]: newValue };
+
+    const getVal = (k: string) => {
+      const item = prev.find((c) => c.key === k);
+      return parseInt(item?.value || "0", 10) || 0;
+    };
+
+    const getCurrentVal = (k: string) => k === changedKey ? (parseInt(newValue, 10) || 0) : getVal(k);
+
+    const totalSessions = getCurrentVal("attendance.total_sessions");
+    const thresholdPct = getCurrentVal("attendance.threshold_percentage");
+    const minSessions = getCurrentVal("attendance.min_sessions_required");
+
+    if (totalSessions <= 0) return { [changedKey]: newValue };
+
+    const updates: Record<string, string> = { [changedKey]: newValue };
+
+    if (changedKey === "attendance.threshold_percentage") {
+      // % changed -> recalculate min_sessions_required
+      const newMinSessions = Math.ceil((thresholdPct / 100) * totalSessions);
+      updates["attendance.min_sessions_required"] = String(Math.max(0, Math.min(newMinSessions, totalSessions)));
+    } else if (changedKey === "attendance.min_sessions_required") {
+      // sessions changed -> recalculate threshold_percentage
+      const newThreshold = Math.round((minSessions / totalSessions) * 100);
+      updates["attendance.threshold_percentage"] = String(Math.max(0, Math.min(100, newThreshold)));
+    } else if (changedKey === "attendance.total_sessions") {
+      // total sessions changed -> keep %, recalculate min_sessions_required
+      const newMinSessions = Math.ceil((thresholdPct / 100) * totalSessions);
+      updates["attendance.min_sessions_required"] = String(Math.max(0, Math.min(newMinSessions, totalSessions)));
+    }
+
+    return updates;
+  };
+
   const updateLocalValue = (key: string, value: string) => {
-    setConfigs((prev) => prev.map((item) => item.key === key ? { ...item, value, isDirty: true } : item))
-    setPendingChanges((prev) => ({ ...prev, [key]: value }))
+    const relatedUpdates = getRelatedUpdates(configs, key, value);
+
+    setConfigs((prev) => prev.map((item) => {
+      if (relatedUpdates[item.key] !== undefined) {
+        return { ...item, value: relatedUpdates[item.key], isDirty: true };
+      }
+      return item;
+    }));
+    setPendingChanges((prev) => {
+      const next = { ...prev };
+      for (const [k, v] of Object.entries(relatedUpdates)) {
+        next[k] = v;
+      }
+      return next;
+    });
     setSaveStatus("idle")
   }
 

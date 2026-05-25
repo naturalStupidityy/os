@@ -81,7 +81,7 @@ export default function RosterPage() {
     try {
       const result = await attendanceApi.manualCheckIn({
         sessionId: selectedSessionId,
-        eventId: 'event-001',
+        eventId: selectedSession?.eventId,
         userId: markTarget.userId,
         userName: markTarget.userName,
         reason: manualReason || `Manually marked ${markAction} by ${user?.name || 'instructor'}`,
