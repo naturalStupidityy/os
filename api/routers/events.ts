@@ -30,10 +30,21 @@ export const eventsRouter = createRouter({
     }),
 
   getSchedule: publicQuery
-    .input(z.object({ eventId: z.string() }))
+    .input(z.object({ eventId: z.string().optional() }))
     .query(async ({ input }) => {
       const db = getDb();
-      const eventSessions = await db.select().from(sessions).where(eq(sessions.eventId, input.eventId));
+      let eventSessions;
+      if (input.eventId) {
+        // Try to find sessions by the provided eventId
+        eventSessions = await db.select().from(sessions).where(eq(sessions.eventId, input.eventId));
+        // If no sessions found and eventId doesn't look like a UUID, try getting all sessions
+        if (eventSessions.length === 0 && !input.eventId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+          eventSessions = await db.select().from(sessions);
+        }
+      } else {
+        // No eventId provided - return all sessions grouped by date
+        eventSessions = await db.select().from(sessions);
+      }
 
       const dateMap = new Map<string, typeof eventSessions>();
       for (const session of eventSessions) {

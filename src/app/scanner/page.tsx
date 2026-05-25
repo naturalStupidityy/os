@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { ScanLine, Camera, Keyboard, CheckCircle2, Loader2, AlertCircle, Zap, X } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -7,10 +7,11 @@ import { Badge } from "@/components/ui/badge"
 import { DashboardLayout } from "@/components/layout/dashboard-layout"
 import { qrApi, attendanceApi } from "@/lib/api"
 import { useAuthStore } from "@/stores/authStore"
+import { useZxing } from "react-zxing"
 
 export default function ScannerPage() {
   const { user } = useAuthStore()
-  const [scanMode, setScanMode] = useState<"camera" | "manual">("manual")
+  const [scanMode, setScanMode] = useState<"camera" | "manual">("camera")
   const [qrData, setQrData] = useState("")
   const [isValidating, setIsValidating] = useState(false)
   const [validation, setValidation] = useState<any>(null)
@@ -18,37 +19,35 @@ export default function ScannerPage() {
   const [isCheckingIn, setIsCheckingIn] = useState(false)
   const [error, setError] = useState("")
   const [scanSuccess, setScanSuccess] = useState(false)
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const [paused, setPaused] = useState(false)
 
-  // Show exempt message for admin users
   const isAdmin = user?.role === 'admin'
 
-  // Camera setup
-  useEffect(() => {
-    if (scanMode === "camera") {
-      navigator.mediaDevices?.getUserMedia({ video: { facingMode: "environment" } })
-        .then((s) => {
-          if (videoRef.current) videoRef.current.srcObject = s
-        })
-        .catch(() => {
-          setError("Camera access denied. Please use manual entry.")
-          setScanMode("manual")
-        })
-    }
-    return () => {
-      if (videoRef.current?.srcObject) {
-        (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop())
+  // react-zxing QR decoder hook
+  const { ref: videoRef } = useZxing({
+    paused: paused || scanMode !== "camera",
+    onDecodeResult(decodedResult) {
+      const decodedText = decodedResult.getText()
+      if (decodedText && !scanSuccess && !isValidating) {
+        setScanSuccess(true)
+        setQrData(decodedText)
+        setPaused(true)
+        // Auto-validate after a short delay to show the success state
+        setTimeout(() => {
+          validateQrData(decodedText)
+        }, 500)
       }
-    }
-  }, [scanMode])
+    },
+    onError(err: unknown) {
+      // Ignore scan errors (no QR in frame yet)
+      const errorName = err instanceof Error ? err.name : '';
+      if (errorName !== 'NotFoundException') {
+        console.debug('QR scan error:', err)
+      }
+    },
+  })
 
-  // Reset scan state when changing modes
-  useEffect(() => {
-    setScanSuccess(false)
-    setError("")
-  }, [scanMode])
-
-  const validateQrData = async (data: string) => {
+  const validateQrData = useCallback(async (data: string) => {
     if (!data.trim()) return
     setIsValidating(true)
     setError("")
@@ -62,7 +61,7 @@ export default function ScannerPage() {
     } finally {
       setIsValidating(false)
     }
-  }
+  }, [])
 
   const handleValidate = async () => {
     await validateQrData(qrData)
@@ -92,7 +91,15 @@ export default function ScannerPage() {
     setCheckInResult(null)
     setError("")
     setScanSuccess(false)
+    setPaused(false)
   }
+
+  // Reset when switching modes
+  useEffect(() => {
+    setScanSuccess(false)
+    setError("")
+    setPaused(false)
+  }, [scanMode])
 
   return (
     <DashboardLayout>
@@ -105,7 +112,7 @@ export default function ScannerPage() {
         {isAdmin && (
           <Card className="border-blue-500 bg-blue-50">
             <CardContent className="p-4 flex items-center gap-2 text-blue-700">
-              <CheckCircle2 className="h-5 w-5" />
+              <CheckCircle2 className="h-5 w-5 flex-shrink-0" />
               <span>As an admin, attendance marking is optional. You are automatically exempt.</span>
             </CardContent>
           </Card>
@@ -132,7 +139,7 @@ export default function ScannerPage() {
         {error && (
           <Card className="border-red-500 bg-red-50">
             <CardContent className="p-4 flex items-center gap-2 text-red-700">
-              <AlertCircle className="h-5 w-5" />
+              <AlertCircle className="h-5 w-5 flex-shrink-0" />
               {error}
             </CardContent>
           </Card>
@@ -147,11 +154,11 @@ export default function ScannerPage() {
                 Camera Scanner
               </CardTitle>
               <CardDescription>
-                Point your camera at a QR code to scan, then paste the data below to validate
+                Point your camera at a QR code to scan automatically
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="relative aspect-video bg-black rounded-lg overflow-hidden flex items-center justify-center">
+              <div className="relative aspect-[4/3] bg-black rounded-lg overflow-hidden flex items-center justify-center">
                 <video
                   ref={videoRef}
                   autoPlay
@@ -159,7 +166,8 @@ export default function ScannerPage() {
                   muted
                   className="absolute inset-0 w-full h-full object-cover"
                 />
-                <div className="absolute inset-0 border-2 border-orange-500/30 m-8 rounded-lg">
+                {/* Scan overlay frame */}
+                <div className="absolute inset-0 border-2 border-orange-500/30 m-8 rounded-lg pointer-events-none">
                   <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-orange-500" />
                   <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-orange-500" />
                   <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-orange-500" />
@@ -167,16 +175,26 @@ export default function ScannerPage() {
                 </div>
                 {/* Success overlay */}
                 {scanSuccess && (
-                  <div className="absolute inset-0 bg-green-500/20 flex items-center justify-center z-10">
+                  <div className="absolute inset-0 bg-green-500/20 flex items-center justify-center z-10 pointer-events-none">
                     <div className="bg-green-500 text-white px-4 py-2 rounded-full font-medium animate-pulse">
                       QR Code Detected!
                     </div>
                   </div>
                 )}
+                {/* Loading overlay */}
+                {isValidating && (
+                  <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-10 pointer-events-none">
+                    <div className="flex flex-col items-center gap-2">
+                      <Loader2 className="h-8 w-8 animate-spin text-white" />
+                      <span className="text-white text-sm">Validating...</span>
+                    </div>
+                  </div>
+                )}
               </div>
+              {/* Manual paste fallback */}
               <div className="flex gap-2">
                 <Input
-                  placeholder="Paste QR data here..."
+                  placeholder="Or paste QR data here..."
                   value={qrData}
                   onChange={(e) => setQrData(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleValidate()}
@@ -276,10 +294,10 @@ export default function ScannerPage() {
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="grid grid-cols-2 gap-4 text-sm">
-                <div><span className="text-muted-foreground">Record ID:</span> <span className="font-mono">{checkInResult.record?.id?.slice(0, 8)}</span></div>
-                <div><span className="text-muted-foreground">Status:</span> <Badge variant="success">{checkInResult.record?.status}</Badge></div>
-                <div><span className="text-muted-foreground">Time:</span> <span>{new Date(checkInResult.record?.checkInAt).toLocaleTimeString()}</span></div>
-                <div><span className="text-muted-foreground">Method:</span> <Badge variant="outline">{checkInResult.record?.checkInMethod || 'qr'}</Badge></div>
+                <div><span className="text-muted-foreground">Record ID:</span> <span className="font-mono">{checkInResult.id?.slice(0, 8)}</span></div>
+                <div><span className="text-muted-foreground">Status:</span> <Badge variant="success">{checkInResult.status}</Badge></div>
+                <div><span className="text-muted-foreground">Time:</span> <span>{new Date(checkInResult.checkInAt).toLocaleTimeString()}</span></div>
+                <div><span className="text-muted-foreground">Method:</span> <Badge variant="outline">{checkInResult.checkInMethod || 'qr'}</Badge></div>
               </div>
               <p className="text-sm text-green-700">{checkInResult.message}</p>
               <Button variant="outline" onClick={reset} className="w-full">Scan Another</Button>

@@ -79,7 +79,7 @@ export const authApi = {
 // Session API
 export const sessionApi = {
   getEvents: () => trpcFetch<any[]>("events.list"),
-  getDaywiseSchedule: (eventId: string) => trpcFetch<any[]>("events.getSchedule", { eventId }),
+  getDaywiseSchedule: (eventId?: string) => trpcFetch<any[]>("events.getSchedule", eventId ? { eventId } : undefined),
   getSessions: (eventId?: string) => trpcFetch<any[]>("events.getSessions", eventId ? { eventId } : {}),
   getSession: (sessionId: string) => trpcFetch<any>("events.getSession", { sessionId }),
   getSessionAttendance: (sessionId: string) => trpcFetch<any[]>("attendance.getSessionAttendance", { sessionId }),

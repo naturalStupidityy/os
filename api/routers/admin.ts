@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { eq, sql } from "drizzle-orm";
-import { createRouter, adminQuery, publicQuery } from "../middleware";
+import { createRouter, adminQuery, instructorQuery, publicQuery } from "../middleware";
 import { getDb } from "../queries/connection";
 import { systemConfig, users, sessions, attendanceRecords, examAttempts, certificates, exams } from "@db/schema";
 
@@ -100,8 +100,8 @@ export const adminRouter = createRouter({
     ];
   }),
 
-  // ── System Stats ──
-  getStats: adminQuery.query(async () => {
+  // ── System Stats ── (instructors and admins can view)
+  getStats: instructorQuery.query(async () => {
     const db = getDb();
 
     const totalVolunteers = await db.select({ count: sql<number>`count(*)` }).from(users).where(eq(users.role, "volunteer"));

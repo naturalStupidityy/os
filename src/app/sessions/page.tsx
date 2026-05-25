@@ -20,7 +20,7 @@ export default function SessionsPage() {
   const loadSchedule = async () => {
     setIsLoading(true)
     try {
-      const data = await sessionApi.getDaywiseSchedule('event-001')
+      const data = await sessionApi.getDaywiseSchedule()
       setSchedule(data)
       if (data.length > 0) setActiveDay(String(data[0].day))
     } catch (e: any) {
