@@ -4,6 +4,45 @@ import { createRouter, adminQuery, instructorQuery, publicQuery } from "../middl
 import { getDb } from "../queries/connection";
 import { systemConfig, users, sessions, attendanceRecords, examAttempts, certificates, exams } from "@db/schema";
 
+// Default configuration values (mirrored from seed.ts)
+const DEFAULT_CONFIG = [
+  { key: "attendance.threshold_percentage", value: "75", category: "attendance", description: "Minimum attendance percentage required for exam eligibility", valueType: "integer", minValue: 0, maxValue: 100, editableByAdmin: true, requiresRestart: false },
+  { key: "attendance.min_sessions_required", value: "9", category: "attendance", description: "Minimum number of attended sessions to qualify for exams", valueType: "integer", minValue: 0, maxValue: 20, editableByAdmin: true, requiresRestart: false },
+  { key: "attendance.total_sessions", value: "12", category: "attendance", description: "Total number of attendance sessions in the training program", valueType: "integer", minValue: 1, maxValue: 50, editableByAdmin: true, requiresRestart: false },
+  { key: "attendance.checkin_window_minutes", value: "30", category: "attendance", description: "Time window around session start for QR check-in", valueType: "integer", minValue: 5, maxValue: 120, editableByAdmin: true, requiresRestart: false },
+  { key: "attendance.manual_override_enabled", value: "true", category: "attendance", description: "Allow instructors to manually override attendance records", valueType: "boolean", editableByAdmin: true, requiresRestart: false },
+  { key: "attendance.manual_override_grace_minutes", value: "15", category: "attendance", description: "Grace period after session ends for manual override", valueType: "integer", minValue: 0, maxValue: 60, editableByAdmin: true, requiresRestart: false },
+  { key: "attendance.instructor_override_alert_threshold", value: "20", category: "attendance", description: "Alert admin if instructor manually marks more than this % of a batch", valueType: "integer", minValue: 0, maxValue: 100, editableByAdmin: true, requiresRestart: false },
+  { key: "tent.total_count", value: "15", category: "logistics", description: "Total number of tents available for volunteer accommodation", valueType: "integer", minValue: 1, maxValue: 100, editableByAdmin: true, requiresRestart: false },
+  { key: "tent.capacity_per_tent", value: "24", category: "logistics", description: "Maximum number of beds per tent", valueType: "integer", minValue: 1, maxValue: 100, editableByAdmin: true, requiresRestart: false },
+  { key: "tent.global_capacity_cap", value: "360", category: "logistics", description: "Global maximum volunteers for tent allocation", valueType: "integer", minValue: 0, maxValue: 5000, editableByAdmin: true, requiresRestart: false },
+  { key: "tent.female_sector_start", value: "1", category: "logistics", description: "Starting tent number for female sector", valueType: "integer", minValue: 1, maxValue: 100, editableByAdmin: true, requiresRestart: false },
+  { key: "tent.female_sector_end", value: "7", category: "logistics", description: "Ending tent number for female sector", valueType: "integer", minValue: 1, maxValue: 100, editableByAdmin: true, requiresRestart: false },
+  { key: "tent.male_sector_start", value: "8", category: "logistics", description: "Starting tent number for male sector", valueType: "integer", minValue: 1, maxValue: 100, editableByAdmin: true, requiresRestart: false },
+  { key: "tent.male_sector_end", value: "15", category: "logistics", description: "Ending tent number for male sector", valueType: "integer", minValue: 1, maxValue: 100, editableByAdmin: true, requiresRestart: false },
+  { key: "tent.allocation_strategy", value: "fcfs_fill_full", category: "logistics", description: "Tent allocation strategy (fcfs_fill_full, fcfs_round_robin, gender_segregated)", valueType: "string", editableByAdmin: true, requiresRestart: false },
+  { key: "exam.question_bank_size", value: "1000", category: "assessment", description: "Total questions available in the MCQ bank", valueType: "integer", minValue: 100, maxValue: 10000, editableByAdmin: true, requiresRestart: false },
+  { key: "exam.question_count_pre_test", value: "15", category: "assessment", description: "Number of questions in the Day 1 Pre-Test", valueType: "integer", minValue: 5, maxValue: 50, editableByAdmin: true, requiresRestart: false },
+  { key: "exam.question_count_post_test", value: "30", category: "assessment", description: "Number of questions in the Day 6 Post-Test", valueType: "integer", minValue: 10, maxValue: 100, editableByAdmin: true, requiresRestart: false },
+  { key: "exam.passing_score_percentage", value: "50", category: "assessment", description: "Minimum score percentage required to pass an exam", valueType: "integer", minValue: 0, maxValue: 100, editableByAdmin: true, requiresRestart: false },
+  { key: "exam.max_attempts", value: "2", category: "assessment", description: "Maximum attempts allowed per exam per volunteer", valueType: "integer", minValue: 1, maxValue: 10, editableByAdmin: true, requiresRestart: false },
+  { key: "exam.duration_minutes_pre_test", value: "30", category: "assessment", description: "Duration of the Day 1 Pre-Test in minutes", valueType: "integer", minValue: 10, maxValue: 120, editableByAdmin: true, requiresRestart: false },
+  { key: "exam.duration_minutes_post_test", value: "60", category: "assessment", description: "Duration of the Day 6 Post-Test in minutes", valueType: "integer", minValue: 10, maxValue: 180, editableByAdmin: true, requiresRestart: false },
+  { key: "exam.retake_allowed", value: "true", category: "assessment", description: "Allow volunteers to retake failed exams", valueType: "boolean", editableByAdmin: true, requiresRestart: false },
+  { key: "batch.training_days", value: "6", category: "batch", description: "Number of training days in a batch", valueType: "integer", minValue: 1, maxValue: 30, editableByAdmin: true, requiresRestart: false },
+  { key: "batch.sessions_per_day", value: "2", category: "batch", description: "Number of sessions per day (morning and evening)", valueType: "integer", minValue: 1, maxValue: 5, editableByAdmin: true, requiresRestart: false },
+  { key: "batch.max_volunteers_per_batch", value: "500", category: "batch", description: "Maximum volunteers per training batch", valueType: "integer", minValue: 10, maxValue: 1000, editableByAdmin: true, requiresRestart: false },
+  { key: "batch.registration_cutoff_hours", value: "24", category: "batch", description: "Hours before batch start when registration closes", valueType: "integer", minValue: 0, maxValue: 168, editableByAdmin: true, requiresRestart: false },
+  { key: "certificate.auto_generate", value: "true", category: "certificate", description: "Automatically generate certificates when volunteer passes exam and meets attendance", valueType: "boolean", editableByAdmin: true, requiresRestart: false },
+  { key: "certificate.require_both_attendance_and_exam", value: "true", category: "certificate", description: "Require both attendance threshold and exam pass for certificate issuance", valueType: "boolean", editableByAdmin: true, requiresRestart: false },
+  { key: "qr.validity_minutes", value: "15", category: "security", description: "QR code validity duration in minutes before expiry", valueType: "integer", minValue: 1, maxValue: 60, editableByAdmin: true, requiresRestart: false },
+  { key: "notifications.sms_enabled", value: "false", category: "notifications", description: "Enable SMS notifications (requires external SMS API)", valueType: "boolean", editableByAdmin: true, requiresRestart: false },
+  { key: "notifications.whatsapp_enabled", value: "false", category: "notifications", description: "Enable WhatsApp notifications (requires external WhatsApp API)", valueType: "boolean", editableByAdmin: true, requiresRestart: false },
+  { key: "registration.enabled", value: "true", category: "general", description: "Allow new volunteer registrations through the system", valueType: "boolean", editableByAdmin: true, requiresRestart: false },
+  { key: "registration.max_per_day", value: "500", category: "general", description: "Maximum new registrations allowed per day", valueType: "integer", minValue: 1, maxValue: 2000, editableByAdmin: true, requiresRestart: false },
+  { key: "registration.require_aadhaar", value: "false", category: "general", description: "Require Aadhaar verification during registration (requires external Aadhaar API)", valueType: "boolean", editableByAdmin: true, requiresRestart: false },
+];
+
 export const adminRouter = createRouter({
   // ── Configuration Management ──
   getConfig: adminQuery.query(async () => {
@@ -84,7 +123,35 @@ export const adminRouter = createRouter({
   resetConfigToDefault: adminQuery
     .input(z.object({ key: z.string() }))
     .mutation(async ({ input }) => {
-      return { key: input.key, success: true, message: "Reset to default" };
+      const db = getDb();
+
+      // Import default config values from seed
+      const defaultConfig = DEFAULT_CONFIG.find((c: any) => c.key === input.key);
+      if (!defaultConfig) {
+        throw new Error(`No default value found for key: ${input.key}`);
+      }
+
+      const existing = await db.select().from(systemConfig).where(eq(systemConfig.key, input.key)).limit(1);
+
+      if (existing.length > 0) {
+        await db.update(systemConfig)
+          .set({ value: defaultConfig.value, updatedAt: new Date() })
+          .where(eq(systemConfig.key, input.key));
+      } else {
+        await db.insert(systemConfig).values({
+          key: input.key,
+          value: defaultConfig.value,
+          category: defaultConfig.category,
+          description: defaultConfig.description,
+          valueType: defaultConfig.valueType,
+          minValue: defaultConfig.minValue,
+          maxValue: defaultConfig.maxValue,
+          editableByAdmin: defaultConfig.editableByAdmin,
+          requiresRestart: defaultConfig.requiresRestart,
+        });
+      }
+
+      return { key: input.key, value: defaultConfig.value, success: true, message: `Reset ${input.key} to default: ${defaultConfig.value}` };
     }),
 
   getConfigCategories: adminQuery.query(() => {

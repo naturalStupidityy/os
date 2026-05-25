@@ -133,7 +133,7 @@ export default function ScannerPage() {
     try {
       const result = await attendanceApi.checkIn({
         sessionId: validation.sessionId,
-        eventId: 'event-001',
+        eventId: validation.eventId || 'event-001',
         qrData: qrData.trim(),
         method: 'qr',
       })

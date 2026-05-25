@@ -9,10 +9,22 @@ import { rateLimiters } from "../lib/rateLimit";
 // Demo OTP store (in-memory for dev/demo)
 const otpStore = new Map<string, { otp: string; phone: string; role: string; expires: number }>();
 
-function generateVID(role: string): string {
+async function generateUniqueVID(db: any, role: string): Promise<string> {
   const prefix = role === "admin" ? "0" : role === "instructor" ? "2" : role === "assessment_admin" ? "3" : "1";
-  const random = Math.floor(Math.random() * 9000) + 1000;
-  return `VK-2025-${prefix}${random}`;
+
+  // Use a larger random range to reduce collision probability
+  const random = Math.floor(Math.random() * 90000) + 10000;
+  const vid = `VK-2025-${prefix}${random}`;
+
+  // Check for collision
+  const existing = await db.select().from(users).where(eq(users.vid, vid)).limit(1);
+  if (existing.length > 0) {
+    // Retry once with a different random number
+    const retryRandom = Math.floor(Math.random() * 90000) + 10000;
+    return `VK-2025-${prefix}${retryRandom}`;
+  }
+
+  return vid;
 }
 
 export const authRouter = createRouter({
@@ -108,8 +120,10 @@ export const authRouter = createRouter({
           lastName = String(nextNum);
         }
 
+        const vid = await generateUniqueVID(db, role);
+
         const newUser = {
-          vid: generateVID(role),
+          vid,
           fullName,
           firstName,
           lastName,

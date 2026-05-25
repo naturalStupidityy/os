@@ -1,7 +1,24 @@
 #!/bin/bash
 
-# VKumbh Volunteer Management System - AWS Deployment Script
-# This script deploys the full-stack application to AWS
+# VKumbh Volunteer Management System - Production Deployment Script
+# Usage: ./deploy.sh [command] [options]
+#
+# Commands:
+#   setup       - Initial server setup (install deps, configure env)
+#   build       - Build the application for production
+#   migrate     - Run database migrations and seed
+#   start       - Start the production server
+#   stop        - Stop the production server
+#   restart     - Restart the production server
+#   status      - Check server status
+#   logs        - View server logs
+#   full        - Run full deployment (build + migrate + restart)
+#   update      - Update from git and redeploy
+#
+# Examples:
+#   ./deploy.sh setup
+#   ./deploy.sh full
+#   ./deploy.sh logs
 
 set -e
 
@@ -10,328 +27,510 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
+BOLD='\033[1m'
 
-echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}  VKumbh AWS Deployment${NC}"
-echo -e "${BLUE}========================================${NC}"
-echo ""
+# Script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-# Check AWS credentials
-if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
-    echo -e "${RED}ERROR: AWS credentials not found.${NC}"
-    echo -e "${YELLOW}Please set your AWS credentials:${NC}"
-    echo -e "  export AWS_ACCESS_KEY_ID=your_access_key"
-    echo -e "  export AWS_SECRET_ACCESS_KEY=your_secret_key"
-    echo -e "  export AWS_REGION=ap-south-1  # optional, defaults to ap-south-1"
-    exit 1
-fi
+# Default configuration
+APP_NAME="vkumbh"
+NODE_VERSION="20"
+PORT="${PORT:-3000}"
+HOST="${HOST:-0.0.0.0}"
+LOG_FILE="${SCRIPT_DIR}/logs/${APP_NAME}.log"
+PID_FILE="${SCRIPT_DIR}/tmp/${APP_NAME}.pid"
+ENV_FILE="${SCRIPT_DIR}/.env"
 
-# Set defaults
-AWS_REGION=${AWS_REGION:-"ap-south-1"}
-AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "")
+# Parse command
+COMMAND="${1:-help}"
+shift || true
 
-if [ -z "$AWS_ACCOUNT_ID" ]; then
-    echo -e "${RED}ERROR: Unable to get AWS account ID. Check your credentials.${NC}"
-    exit 1
-fi
-
-echo -e "${GREEN}AWS Account: $AWS_ACCOUNT_ID${NC}"
-echo -e "${GREEN}AWS Region:  $AWS_REGION${NC}"
-echo ""
-
-# Configuration
-PROJECT_NAME="vkumbh"
-DB_NAME="vkumbh"
-DB_USER="vkumbh_admin"
-DB_PASSWORD=${DB_PASSWORD:-$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c 24)}
-JWT_SECRET=${JWT_SECRET:-$(openssl rand -base64 64)}
-ECR_REPO="$PROJECT_NAME-app"
-ECS_CLUSTER="$PROJECT_NAME-cluster"
-ECS_SERVICE="$PROJECT_NAME-service"
-TASK_FAMILY="$PROJECT_NAME-task"
-
-# ============================================
-# STEP 1: Create ECR Repository
-# ============================================
-echo -e "${YELLOW}[1/8] Setting up ECR repository...${NC}"
-aws ecr describe-repositories --repository-names $ECR_REPO --region $AWS_REGION 2>/dev/null || \
-    aws ecr create-repository --repository-name $ECR_REPO --region $AWS_REGION > /dev/null
-ECR_URI="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO"
-echo -e "${GREEN}ECR Repository: $ECR_URI${NC}"
-
-# ============================================
-# STEP 2: Login to ECR
-# ============================================
-echo -e "${YELLOW}[2/8] Logging in to ECR...${NC}"
-aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_URI 2>/dev/null || {
-    echo -e "${RED}ERROR: Failed to login to ECR. Make sure Docker is running.${NC}"
-    exit 1
+# Helper functions
+print_header() {
+    echo ""
+    echo -e "${BLUE}========================================${NC}"
+    echo -e "${BLUE}  VKumbh Deployment Tool${NC}"
+    echo -e "${BLUE}========================================${NC}"
+    echo ""
 }
 
-# ============================================
-# STEP 3: Build and Push Docker Image
-# ============================================
-echo -e "${YELLOW}[3/8] Building Docker image...${NC}"
+print_success() { echo -e "${GREEN}✓ $1${NC}"; }
+print_error() { echo -e "${RED}✗ $1${NC}"; }
+print_warning() { echo -e "${YELLOW}⚠ $1${NC}"; }
+print_info() { echo -e "${CYAN}ℹ $1${NC}"; }
+print_step() { echo -e "${BOLD}$1${NC}"; }
 
-# Create Dockerfile
-cat > Dockerfile << 'DOCKERFILE_EOF'
-FROM node:20-alpine AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
+check_nodejs() {
+    if ! command -v node &> /dev/null; then
+        print_error "Node.js is not installed"
+        print_info "Installing Node.js ${NODE_VERSION}..."
 
-FROM node:20-alpine AS runner
-WORKDIR /app
-ENV NODE_ENV=production
-COPY package*.json ./
-RUN npm ci --only=production && npm cache clean --force
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/db ./db
-COPY drizzle.config.ts .
-EXPOSE 3000
-CMD ["node", "dist/boot.js"]
-DOCKERFILE_EOF
+        if command -v apt &> /dev/null; then
+            # Debian/Ubuntu
+            curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash -
+            apt-get install -y nodejs
+        elif command -v yum &> /dev/null; then
+            # RHEL/CentOS/Fedora
+            curl -fsSL https://rpm.nodesource.com/setup_${NODE_VERSION}.x | bash -
+            yum install -y nodejs
+        elif command -v apk &> /dev/null; then
+            # Alpine
+            apk add --no-cache nodejs npm
+        else
+            print_error "Cannot install Node.js automatically. Please install Node.js ${NODE_VERSION}+ manually."
+            exit 1
+        fi
+    fi
 
-docker build -t $ECR_REPO:latest .
-docker tag $ECR_REPO:latest $ECR_URI:latest
-echo -e "${YELLOW}Pushing image to ECR...${NC}"
-docker push $ECR_URI:latest
-echo -e "${GREEN}Image pushed!${NC}"
-
-# ============================================
-# STEP 4: Create RDS PostgreSQL
-# ============================================
-echo -e "${YELLOW}[4/8] Setting up RDS PostgreSQL...${NC}"
-
-DB_INSTANCE_ID="$PROJECT_NAME-db"
-DB_SG_NAME="$PROJECT_NAME-db-sg"
-
-# Create DB security group
-DB_SG_ID=$(aws ec2 describe-security-groups --group-names $DB_SG_NAME --query 'SecurityGroups[0].GroupId' --output text --region $AWS_REGION 2>/dev/null || echo "")
-
-if [ -z "$DB_SG_ID" ]; then
-    VPC_ID=$(aws ec2 describe-vpcs --filters "Name=is-default,Values=true" --query 'Vpcs[0].VpcId' --output text --region $AWS_REGION)
-    DB_SG_ID=$(aws ec2 create-security-group --group-name $DB_SG_NAME --description "VKumbh DB security group" --vpc-id $VPC_ID --query 'GroupId' --output text --region $AWS_REGION)
-    aws ec2 authorize-security-group-ingress --group-id $DB_SG_ID --protocol tcp --port 5432 --cidr 0.0.0.0/0 --region $AWS_REGION 2>/dev/null || true
-fi
-
-# Check if RDS instance exists
-DB_STATUS=$(aws rds describe-db-instances --db-instance-identifier $DB_INSTANCE_ID --query 'DBInstances[0].DBInstanceStatus' --output text --region $AWS_REGION 2>/dev/null || echo "not-found")
-
-if [ "$DB_STATUS" == "not-found" ]; then
-    echo -e "${YELLOW}Creating RDS PostgreSQL instance (this may take 10-15 minutes)...${NC}"
-    aws rds create-db-instance \
-        --db-instance-identifier $DB_INSTANCE_ID \
-        --db-instance-class db.t3.micro \
-        --engine postgres \
-        --engine-version 16 \
-        --allocated-storage 20 \
-        --db-name $DB_NAME \
-        --master-username $DB_USER \
-        --master-user-password $DB_PASSWORD \
-        --vpc-security-group-ids $DB_SG_ID \
-        --publicly-accessible \
-        --region $AWS_REGION \
-        --no-multi-az \
-        --storage-encrypted \
-        > /dev/null
-
-    echo -e "${YELLOW}Waiting for database to be available...${NC}"
-    aws rds wait db-instance-available --db-instance-identifier $DB_INSTANCE_ID --region $AWS_REGION
-else
-    echo -e "${GREEN}RDS instance already exists (status: $DB_STATUS)${NC}"
-fi
-
-DB_ENDPOINT=$(aws rds describe-db-instances --db-instance-identifier $DB_INSTANCE_ID --query 'DBInstances[0].Endpoint.Address' --output text --region $AWS_REGION)
-DATABASE_URL="postgres://$DB_USER:$DB_PASSWORD@$DB_ENDPOINT:5432/$DB_NAME"
-echo -e "${GREEN}Database URL: $DATABASE_URL${NC}"
-
-# ============================================
-# STEP 5: Create ECS Cluster
-# ============================================
-echo -e "${YELLOW}[5/8] Setting up ECS cluster...${NC}"
-
-aws ecs describe-clusters --clusters $ECS_CLUSTER --query 'clusters[0].clusterName' --output text --region $AWS_REGION 2>/dev/null || \
-    aws ecs create-cluster --cluster-name $ECS_CLUSTER --region $AWS_REGION > /dev/null
-
-# Create task execution role
-TASK_ROLE_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:role/ecsTaskExecutionRole"
-aws iam get-role --role-name ecsTaskExecutionRole --region $AWS_REGION > /dev/null 2>&1 || {
-    echo -e "${YELLOW}Creating ECS task execution role...${NC}"
-    aws iam create-role --role-name ecsTaskExecutionRole \
-        --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"}]}' \
-        --region $AWS_REGION > /dev/null 2>&1 || true
-    aws iam attach-role-policy --role-name ecsTaskExecutionRole \
-        --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy \
-        --region $AWS_REGION > /dev/null 2>&1 || true
+    local node_version
+    node_version=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
+    if [ "$node_version" -lt "$NODE_VERSION" ]; then
+        print_error "Node.js ${NODE_VERSION}+ required, found $(node -v)"
+        exit 1
+    fi
+    print_success "Node.js $(node -v)"
 }
 
-echo -e "${GREEN}ECS Cluster: $ECS_CLUSTER${NC}"
+check_postgres() {
+    print_step "Checking PostgreSQL connection..."
 
-# ============================================
-# STEP 6: Register Task Definition
-# ============================================
-echo -e "${YELLOW}[6/8] Registering task definition...${NC}"
+    if [ -z "$DATABASE_URL" ]; then
+        if [ -f "$ENV_FILE" ]; then
+            # shellcheck source=/dev/null
+            source "$ENV_FILE"
+        fi
+    fi
 
-cat > task-def.json << EOF
-{
-    "family": "$TASK_FAMILY",
-    "networkMode": "awsvpc",
-    "requiresCompatibilities": ["FARGATE"],
-    "cpu": "512",
-    "memory": "1024",
-    "executionRoleArn": "$TASK_ROLE_ARN",
-    "containerDefinitions": [
-        {
-            "name": "$PROJECT_NAME",
-            "image": "$ECR_URI:latest",
-            "portMappings": [
-                {
-                    "containerPort": 3000,
-                    "protocol": "tcp"
-                }
-            ],
-            "environment": [
-                {
-                    "name": "NODE_ENV",
-                    "value": "production"
-                },
-                {
-                    "name": "DATABASE_URL",
-                    "value": "$DATABASE_URL"
-                },
-                {
-                    "name": "JWT_SECRET",
-                    "value": "$JWT_SECRET"
-                },
-                {
-                    "name": "HOST",
-                    "value": "0.0.0.0"
-                },
-                {
-                    "name": "PORT",
-                    "value": "3000"
-                }
-            ],
-            "logConfiguration": {
-                "logDriver": "awslogs",
-                "options": {
-                    "awslogs-group": "/ecs/$PROJECT_NAME",
-                    "awslogs-region": "$AWS_REGION",
-                    "awslogs-stream-prefix": "ecs"
-                }
-            }
-        }
-    ]
+    if [ -z "$DATABASE_URL" ]; then
+        print_error "DATABASE_URL is not set"
+        print_info "Please set it in .env file or export it:"
+        echo "  export DATABASE_URL=postgres://user:pass@localhost:5432/vkumbh"
+        return 1
+    fi
+
+    print_success "DATABASE_URL is configured"
+    return 0
 }
+
+create_directories() {
+    print_step "Creating required directories..."
+    mkdir -p "${SCRIPT_DIR}/logs"
+    mkdir -p "${SCRIPT_DIR}/tmp"
+    mkdir -p "${SCRIPT_DIR}/dist"
+    print_success "Directories created"
+}
+
+generate_env() {
+    if [ -f "$ENV_FILE" ]; then
+        print_warning ".env file already exists"
+        read -p "Overwrite? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Keeping existing .env file"
+            return
+        fi
+    fi
+
+    print_step "Creating .env configuration file..."
+
+    # Generate secure secrets
+    local jwt_secret
+    jwt_secret=$(openssl rand -base64 48 2>/dev/null || head -c 48 /dev/urandom | base64)
+
+    cat > "$ENV_FILE" << EOF
+# VKumbh Configuration
+NODE_ENV=production
+HOST=0.0.0.0
+PORT=3000
+
+# Database (REQUIRED - update with your PostgreSQL credentials)
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/vkumbh
+
+# Security (auto-generated, change if needed)
+JWT_SECRET=${jwt_secret}
+
+# Optional: App credentials for external integrations
+# APP_ID=your_app_id
+# APP_SECRET=your_app_secret
+
+# Optional: PostgreSQL SSL (recommended for production)
+# PGSSLMODE=require
 EOF
 
-aws ecs register-task-definition --cli-input-json file://task-def.json --region $AWS_REGION > /dev/null
-rm task-def.json
-echo -e "${GREEN}Task definition registered!${NC}"
-
-# ============================================
-# STEP 7: Create/Update ECS Service
-# ============================================
-echo -e "${YELLOW}[7/8] Creating ECS service...${NC}"
-
-# Create CloudWatch log group
-aws logs create-log-group --log-group-name "/ecs/$PROJECT_NAME" --region $AWS_REGION 2>/dev/null || true
-
-# Create security group for ECS
-ECS_SG_NAME="$PROJECT_NAME-ecs-sg"
-ECS_SG_ID=$(aws ec2 describe-security-groups --group-names $ECS_SG_NAME --query 'SecurityGroups[0].GroupId' --output text --region $AWS_REGION 2>/dev/null || echo "")
-
-if [ -z "$ECS_SG_ID" ]; then
-    VPC_ID=$(aws ec2 describe-vpcs --filters "Name=is-default,Values=true" --query 'Vpcs[0].VpcId' --output text --region $AWS_REGION)
-    ECS_SG_ID=$(aws ec2 create-security-group --group-name $ECS_SG_NAME --description "VKumbh ECS security group" --vpc-id $VPC_ID --query 'GroupId' --output text --region $AWS_REGION)
-    aws ec2 authorize-security-group-ingress --group-id $ECS_SG_ID --protocol tcp --port 3000 --cidr 0.0.0.0/0 --region $AWS_REGION 2>/dev/null || true
-fi
-
-# Get subnets
-SUBNETS=$(aws ec2 describe-subnets --filters "Name=default-for-az,Values=true" --query 'Subnets[*].SubnetId' --output json --region $AWS_REGION)
-
-# Check if service exists
-SERVICE_STATUS=$(aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE --query 'services[0].status' --output text --region $AWS_REGION 2>/dev/null || echo "MISSING")
-
-if [ "$SERVICE_STATUS" == "MISSING" ] || [ "$SERVICE_STATUS" == "None" ]; then
-    aws ecs create-service \
-        --cluster $ECS_CLUSTER \
-        --service-name $ECS_SERVICE \
-        --task-definition $TASK_FAMILY \
-        --desired-count 1 \
-        --launch-type FARGATE \
-        --network-configuration "awsvpcConfiguration={subnets=$SUBNETS,securityGroups=[$ECS_SG_ID],assignPublicIp=ENABLED}" \
-        --region $AWS_REGION \
-        > /dev/null
-else
-    aws ecs update-service \
-        --cluster $ECS_CLUSTER \
-        --service $ECS_SERVICE \
-        --task-definition $TASK_FAMILY \
-        --force-new-deployment \
-        --region $AWS_REGION \
-        > /dev/null
-fi
-
-echo -e "${GREEN}ECS Service created/updated!${NC}"
-
-# ============================================
-# STEP 8: Run Migrations
-# ============================================
-echo -e "${YELLOW}[8/8] Running database migrations...${NC}"
-echo -e "${YELLOW}Waiting for service to be stable...${NC}"
-aws ecs wait services-stable --cluster $ECS_CLUSTER --services $ECS_SERVICE --region $AWS_REGION 2>/dev/null || {
-    echo -e "${YELLOW}Service is starting up. You may need to run migrations manually.${NC}"
+    print_success ".env file created at ${ENV_FILE}"
+    print_warning "IMPORTANT: Edit .env and update DATABASE_URL with your actual database credentials"
 }
 
-# Run migrations locally using the RDS URL
-echo -e "${YELLOW}Pushing schema to RDS...${NC}"
-export DATABASE_URL
-npx drizzle-kit push
+setup_firewall() {
+    print_step "Configuring firewall..."
 
-echo -e "${YELLOW}Seeding database...${NC}"
-npx tsx db/seed.ts
-
-# ============================================
-# DEPLOYMENT COMPLETE
-# ============================================
-echo ""
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}  Deployment Complete!${NC}"
-echo -e "${GREEN}========================================${NC}"
-echo ""
-
-# Get the service public IP
-TASK_ARN=$(aws ecs list-tasks --cluster $ECS_CLUSTER --service-name $ECS_SERVICE --query 'taskArns[0]' --output text --region $AWS_REGION)
-if [ "$TASK_ARN" != "None" ] && [ -n "$TASK_ARN" ]; then
-    ENI_ID=$(aws ecs describe-tasks --cluster $ECS_CLUSTER --tasks $TASK_ARN --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' --output text --region $AWS_REGION)
-    PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids $ENI_ID --query 'NetworkInterfaces[0].Association.PublicIp' --output text --region $AWS_REGION 2>/dev/null || echo "")
-    if [ -n "$PUBLIC_IP" ] && [ "$PUBLIC_IP" != "None" ]; then
-        echo -e "${GREEN}App URL: http://$PUBLIC_IP:3000${NC}"
+    if command -v ufw &> /dev/null; then
+        # UFW (Ubuntu/Debian)
+        ufw allow 22/tcp comment 'SSH'
+        ufw allow ${PORT}/tcp comment 'VKumbh App'
+        ufw allow 80/tcp comment 'HTTP'
+        ufw allow 443/tcp comment 'HTTPS'
+        print_success "UFW rules added"
+    elif command -v firewall-cmd &> /dev/null; then
+        # firewalld (RHEL/CentOS/Fedora)
+        firewall-cmd --permanent --add-service=ssh
+        firewall-cmd --permanent --add-port=${PORT}/tcp
+        firewall-cmd --permanent --add-service=http
+        firewall-cmd --permanent --add-service=https
+        firewall-cmd --reload
+        print_success "firewalld rules added"
+    elif command -v iptables &> /dev/null; then
+        # iptables fallback
+        iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+        iptables -A INPUT -p tcp --dport ${PORT} -j ACCEPT
+        iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+        iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+        print_success "iptables rules added"
+    else
+        print_warning "No firewall tool found (ufw/firewalld/iptables)"
     fi
-fi
+}
 
-echo ""
-echo -e "${BLUE}Your AWS Resources:${NC}"
-echo -e "  ECR Repository: $ECR_URI"
-echo -e "  RDS Database:   $DB_ENDPOINT"
-echo -e "  ECS Cluster:    $ECS_CLUSTER"
-echo -e "  ECS Service:    $ECS_SERVICE"
-echo ""
-echo -e "${YELLOW}Environment Variables (save these):${NC}"
-echo -e "  DATABASE_URL=$DATABASE_URL"
-echo -e "  JWT_SECRET=$JWT_SECRET"
-echo ""
-echo -e "${YELLOW}To redeploy after code changes:${NC}"
-echo -e "  ./deploy.sh"
-echo ""
-echo -e "${YELLOW}To view logs:${NC}"
-echo -e "  aws logs tail /ecs/$PROJECT_NAME --follow --region $AWS_REGION"
-echo ""
+cmd_setup() {
+    print_header
+    print_step "=== SETUP MODE ==="
+    echo ""
 
-# Cleanup
-rm -f Dockerfile
+    # Install Node.js
+    check_nodejs
+
+    # Install npm dependencies
+    print_step "Installing npm dependencies..."
+    npm ci
+    print_success "Dependencies installed"
+
+    # Create directories
+    create_directories
+
+    # Generate .env
+    generate_env
+
+    # Setup firewall
+    setup_firewall
+
+    echo ""
+    print_success "Setup complete!"
+    echo ""
+    print_info "Next steps:"
+    echo "  1. Edit .env and set your DATABASE_URL"
+    echo "  2. Run: ./deploy.sh migrate"
+    echo "  3. Run: ./deploy.sh full"
+    echo ""
+}
+
+cmd_build() {
+    print_header
+    print_step "=== BUILD MODE ==="
+    echo ""
+
+    check_nodejs
+    create_directories
+
+    # Load env
+    if [ -f "$ENV_FILE" ]; then
+        # shellcheck source=/dev/null
+        export $(grep -v '^#' "$ENV_FILE" | xargs)
+    fi
+
+    print_step "Building application..."
+    npm run build
+
+    print_success "Build complete!"
+    print_info "Output: ${SCRIPT_DIR}/dist/"
+    echo ""
+}
+
+cmd_migrate() {
+    print_header
+    print_step "=== DATABASE MIGRATION MODE ==="
+    echo ""
+
+    # Load env
+    if [ -f "$ENV_FILE" ]; then
+        # shellcheck source=/dev/null
+        export $(grep -v '^#' "$ENV_FILE" | xargs)
+    fi
+
+    if ! check_postgres; then
+        return 1
+    fi
+
+    print_step "Pushing database schema..."
+    npx drizzle-kit push
+    print_success "Schema pushed"
+
+    print_step "Seeding database..."
+    npx tsx db/seed.ts
+    print_success "Database seeded"
+
+    echo ""
+    print_success "Database migration complete!"
+    echo ""
+}
+
+cmd_start() {
+    print_header
+    print_step "=== START MODE ==="
+    echo ""
+
+    # Load env
+    if [ -f "$ENV_FILE" ]; then
+        # shellcheck source=/dev/null
+        export $(grep -v '^#' "$ENV_FILE" | xargs)
+    fi
+
+    if ! check_postgres; then
+        return 1
+    fi
+
+    # Check if already running
+    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        print_warning "Server is already running (PID: $(cat "$PID_FILE"))"
+        print_info "Use './deploy.sh restart' to restart"
+        return 0
+    fi
+
+    print_step "Starting VKumbh server on ${HOST}:${PORT}..."
+    mkdir -p "$(dirname "$LOG_FILE")"
+    nohup node "${SCRIPT_DIR}/dist/boot.js" >> "$LOG_FILE" 2>&1 &
+    local pid=$!
+    echo $pid > "$PID_FILE"
+
+    # Wait for server to start
+    sleep 2
+    if kill -0 "$pid" 2>/dev/null; then
+        print_success "Server started (PID: ${pid})"
+        print_info "Log file: ${LOG_FILE}"
+        print_info "API endpoint: http://${HOST}:${PORT}/api/trpc"
+        print_info "Health check: http://${HOST}:${PORT}/health"
+    else
+        print_error "Server failed to start"
+        print_info "Check logs: ${LOG_FILE}"
+        rm -f "$PID_FILE"
+        return 1
+    fi
+    echo ""
+}
+
+cmd_stop() {
+    print_header
+    print_step "=== STOP MODE ==="
+    echo ""
+
+    if [ -f "$PID_FILE" ]; then
+        local pid
+        pid=$(cat "$PID_FILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            print_step "Stopping server (PID: ${pid})..."
+            kill "$pid"
+            sleep 1
+            if kill -0 "$pid" 2>/dev/null; then
+                print_warning "Force killing..."
+                kill -9 "$pid" 2>/dev/null || true
+            fi
+            print_success "Server stopped"
+        else
+            print_warning "Server not running"
+        fi
+        rm -f "$PID_FILE"
+    else
+        print_warning "No PID file found"
+    fi
+    echo ""
+}
+
+cmd_restart() {
+    print_header
+    print_step "=== RESTART MODE ==="
+    echo ""
+    cmd_stop
+    sleep 1
+    cmd_start
+}
+
+cmd_status() {
+    print_header
+    print_step "=== STATUS MODE ==="
+    echo ""
+
+    if [ -f "$PID_FILE" ]; then
+        local pid
+        pid=$(cat "$PID_FILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            print_success "Server is running (PID: ${pid})"
+            print_info "Uptime: $(ps -p "$pid" -o etime= 2>/dev/null || echo 'unknown')"
+            print_info "Memory: $(ps -p "$pid" -o rss= 2>/dev/null | awk '{print int($1/1024) " MB"}' || echo 'unknown')"
+            print_info "Port: ${PORT}"
+            print_info "Log: ${LOG_FILE}"
+
+            # Check health endpoint
+            local health
+            health=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${PORT}/health" 2>/dev/null || echo "000")
+            if [ "$health" = "200" ]; then
+                print_success "Health check: OK"
+            else
+                print_error "Health check: FAILED (HTTP ${health})"
+            fi
+        else
+            print_error "Server not running (stale PID file)"
+            rm -f "$PID_FILE"
+        fi
+    else
+        print_warning "Server not running"
+    fi
+
+    # Check disk space
+    echo ""
+    print_info "Disk usage:"
+    df -h "$SCRIPT_DIR" 2>/dev/null | tail -1 | awk '{print "  Used: "$3" / "$2" ("$5")"}'
+
+    echo ""
+}
+
+cmd_logs() {
+    local lines="${1:-50}"
+
+    if [ -f "$LOG_FILE" ]; then
+        echo -e "${CYAN}=== Last ${lines} lines of log ===${NC}"
+        tail -n "$lines" "$LOG_FILE"
+    else
+        print_error "Log file not found: ${LOG_FILE}"
+    fi
+}
+
+cmd_full() {
+    print_header
+    print_step "=== FULL DEPLOYMENT MODE ==="
+    echo ""
+
+    # Build
+    cmd_build
+
+    # Migrate
+    cmd_migrate
+
+    # Restart
+    cmd_restart
+
+    echo ""
+    print_success "========================================"
+    print_success "  Full deployment complete!"
+    print_success "========================================"
+    echo ""
+    print_info "Application URL: http://${HOST}:${PORT}"
+    print_info "Health Check:    http://${HOST}:${PORT}/health"
+    echo ""
+}
+
+cmd_update() {
+    print_header
+    print_step "=== UPDATE & REDEPLOY MODE ==="
+    echo ""
+
+    # Check if git repo
+    if [ -d "${SCRIPT_DIR}/../.git" ] || [ -d "${SCRIPT_DIR}/.git" ]; then
+        print_step "Pulling latest changes..."
+        git pull origin main 2>/dev/null || git pull origin master 2>/dev/null || print_warning "Git pull failed, continuing..."
+    else
+        print_warning "Not a git repository, skipping git pull"
+    fi
+
+    # Full deploy
+    cmd_full
+}
+
+cmd_help() {
+    print_header
+    cat << 'EOF'
+Usage: ./deploy.sh [command] [options]
+
+Commands:
+  setup       Initial server setup (install deps, configure environment)
+  build       Build the application for production
+  migrate     Run database schema push and seed data
+  start       Start the production server
+  stop        Stop the production server
+  restart     Restart the production server
+  status      Check server status and health
+  logs [n]    View last n lines of logs (default: 50)
+  full        Full deployment: build + migrate + restart
+  update      Git pull latest changes and redeploy
+  help        Show this help message
+
+Examples:
+  # First time setup on a new server
+  ./deploy.sh setup
+
+  # Full deployment after code changes
+  ./deploy.sh full
+
+  # Quick restart without rebuilding
+  ./deploy.sh restart
+
+  # View recent logs
+  ./deploy.sh logs 100
+
+  # Update from git and redeploy
+  ./deploy.sh update
+
+Environment Variables:
+  DATABASE_URL    PostgreSQL connection string (required)
+  JWT_SECRET      Secret key for JWT tokens (auto-generated)
+  PORT            Server port (default: 3000)
+  HOST            Server host (default: 0.0.0.0)
+
+Configuration Files:
+  .env            Main configuration file (auto-created by setup)
+
+EOF
+}
+
+# Main command dispatcher
+case "$COMMAND" in
+    setup)
+        cmd_setup
+        ;;
+    build)
+        cmd_build
+        ;;
+    migrate)
+        cmd_migrate
+        ;;
+    start)
+        cmd_start
+        ;;
+    stop)
+        cmd_stop
+        ;;
+    restart)
+        cmd_restart
+        ;;
+    status)
+        cmd_status
+        ;;
+    logs)
+        cmd_logs "$@"
+        ;;
+    full)
+        cmd_full
+        ;;
+    update)
+        cmd_update
+        ;;
+    help|--help|-h)
+        cmd_help
+        ;;
+    *)
+        print_error "Unknown command: $COMMAND"
+        cmd_help
+        exit 1
+        ;;
+esac
